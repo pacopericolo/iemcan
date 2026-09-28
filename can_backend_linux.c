@@ -27,7 +27,6 @@ struct _can_backend {
 static void linux_can_read(t_can_backend *b, int fd) {
     if (!b || fd < 0) return;
 
-    t_atom atoms[65];
     struct canfd_frame cfd;
     ssize_t nbytes = read(fd, &cfd, CANFD_MTU);
 
@@ -40,7 +39,6 @@ static void linux_can_read(t_can_backend *b, int fd) {
     unsigned int can_id = cfd.can_id & CAN_EFF_MASK;
     char idbuf[32];
     snprintf(idbuf, sizeof(idbuf), "0x%X", can_id);
-    SETSYMBOL(&argv_sym, gensym(idbuf));
 
     // Behandlung von Remote-Transmission-Request (RTR)
     if (cfd.can_id & CAN_RTR_FLAG) {
@@ -65,6 +63,8 @@ static void linux_can_read(t_can_backend *b, int fd) {
     // Daten-Nutzlast an Pd senden
     int dlc = cfd.len > 8 ? 8 : cfd.len;
     t_atom out_atoms[9];
+    
+    // Das ID-Symbol an Index 0 setzen
     SETSYMBOL(&out_atoms[0], gensym(idbuf));
 
     for (int i = 0; i < dlc; i++) {
