@@ -1,0 +1,10 @@
+#N canvas 966 292 200 200 10;
+#N canvas 19 61 420 300 META 0;
+#X text 10 10 META this is a prototype of a libdir meta file;
+#X text 10 30 NAME iemcan;
+#X text 10 51 AUTHOR IOhannes m zmölnig / IEM;
+#X text 10 70 DESCRIPTION library to access the CANbus from within
+Pd;
+#X text 10 90 LICENSE BSD-3;
+#X text 10 110 VERSION 0.1;
+#X restore 10 10 pd META;

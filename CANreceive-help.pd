@@ -1,0 +1,89 @@
+#N canvas 181 236 720 577 10;
+#X text 81 23 [CANreceive] receive raw data from the CANbus;
+#X msg 75 87 connect vcan0;
+#X msg 96 109 connect can7;
+#X msg 104 150 connect;
+#X msg 105 187 disconnect;
+#X obj 366 372 CANreceive can0;
+#X text 354 322 use the optional argument to specify a device to be
+opened immediately., f 33;
+#N canvas 6 61 450 300 activity 0;
+#X obj 37 37 inlet;
+#X obj 37 60 t a b;
+#X obj 37 83 outlet;
+#X obj 198 132 i;
+#X obj 198 155 + 1;
+#X obj 198 178 % 128;
+#X obj 198 201 t f f;
+#X obj 198 224 outlet;
+#X connect 0 0 1 0;
+#X connect 1 0 2 0;
+#X connect 1 1 3 0;
+#X connect 3 0 4 0;
+#X connect 4 0 5 0;
+#X connect 5 0 6 0;
+#X connect 6 0 7 0;
+#X connect 6 1 3 1;
+#X restore 75 291 pd activity;
+#X obj 103 308 hsl 40 8 0 127 0 0 empty empty empty -2 -8 0 10 -262144
+-1 -1 0 1;
+#X obj 75 377 spigot;
+#X obj 75 400 print rawCAN;
+#X obj 108 360 tgl 15 0 empty empty empty 17 7 0 10 -262144 -1 -1 0
+1;
+#X obj 75 218 t a;
+#X obj 75 259 CANreceive;
+#X text 171 150 receive data from ALL devices;
+#X text 182 187 stop receiving;
+#X text 192 96 receive data from named devices;
+#X text 69 525 © 2018 IOhannes m zmölnig \, IEM;
+#X text 72 546 last updated for iemcan-0.1;
+#X text 363 530 see also:;
+#X obj 442 529 CANparse;
+#X text 494 92 currently supported CAN-backends:;
+#X text 512 113 - socketcan (linux only);
+#X obj 195 377 spigot;
+#X obj 228 360 tgl 15 0 empty empty empty 17 7 0 10 -262144 -1 -1 0
+1;
+#X obj 195 400 print errCAN;
+#X text 67 447 2nd outlet: error-messages ("error") and Remote-Request
+messages ("RTR"), f 72;
+#X text 66 428 1st outlet: normal CAN messages \, with the CAN_ID as
+the selector, f 71;
+#N canvas 176 248 792 328 filtering 0;
+#X msg 128 270 filter;
+#X msg 126 156 filter || 0x123:C00007FF;
+#X text 287 273 clear all filters;
+#X obj 68 303 outlet;
+#X msg 129 187 filter || 0x124:7FF 0x123:7FF;
+#X msg 125 227 filter && 0x123~7FF 0x124~7FF;
+#X text 286 156 matches can-id 123 \, only SFF and non-RTR frames;
+#X text 313 228 matches ALL EXCEPT can-id 123 and can-id 124;
+#X text 315 181 matches BOTH can-id 123 and can-id 124 (including EFF
+and RTR frames), f 70;
+#X text 46 29 you can set filters to reduce the amount of data you
+receive (and must process).;
+#X text 48 59 filters *must* be set prior to opening a connection.setting
+filters while a connection is already established \, will defer it
+until the next [connect( message.;
+#X text 50 106 filtering is done on the kernel-level \, so requesting
+any filtering here will only served with a best effort.;
+#X connect 0 0 3 0;
+#X connect 1 0 3 0;
+#X connect 4 0 3 0;
+#X connect 5 0 3 0;
+#X restore 193 234 pd filtering;
+#X connect 1 0 12 0;
+#X connect 2 0 12 0;
+#X connect 3 0 12 0;
+#X connect 4 0 12 0;
+#X connect 7 0 9 0;
+#X connect 7 1 8 0;
+#X connect 9 0 10 0;
+#X connect 11 0 9 1;
+#X connect 12 0 13 0;
+#X connect 13 0 7 0;
+#X connect 13 1 23 0;
+#X connect 23 0 25 0;
+#X connect 24 0 23 1;
+#X connect 28 0 12 0;

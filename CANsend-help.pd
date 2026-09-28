@@ -1,0 +1,35 @@
+#N canvas 187 283 733 435 10;
+#X obj 72 308 CANsend;
+#X msg 44 68 connect vcan0;
+#X msg 109 193 send 0x106 1 2 3;
+#X text 41 22 [CANsend] send data to the CANbus;
+#X msg 72 91 connect can0;
+#X obj 72 160 t a;
+#X msg 82 127 disconnect;
+#X msg 109 233 0x106 1 2 3;
+#X text 224 190 send "1 2 3" to CAN_ID 0x106;
+#X obj 89 285 t a;
+#X msg 109 263 list 0x106 1 2 3;
+#X text 225 222 you can also use the CAN_ID (starting with "0x") as
+selector (as output by [CANreceive]);
+#X text 229 265 or a list;
+#X text 69 365 © 2018 IOhannes m zmölnig \, IEM;
+#X text 72 386 last updated for iemcan-0.1;
+#X text 363 370 see also:;
+#X obj 442 369 CANreceive;
+#X obj 171 335 tgl 15 0 empty empty empty 17 7 0 10 -262144 -1 -1 0
+1;
+#X obj 72 331 print info;
+#X text 200 332 connection state;
+#X text 169 75 connect to a named device;
+#X text 173 127 disconnect from the device;
+#X connect 0 0 18 0;
+#X connect 0 1 17 0;
+#X connect 1 0 5 0;
+#X connect 2 0 9 0;
+#X connect 4 0 5 0;
+#X connect 5 0 0 0;
+#X connect 6 0 5 0;
+#X connect 7 0 9 0;
+#X connect 9 0 0 0;
+#X connect 10 0 9 0;

@@ -1,0 +1,61 @@
+#N canvas 251 131 822 685 10;
+#X obj 159 478 t a;
+#X msg 158 450 signal;
+#X floatatom 55 590 5 0 0 0 - - -;
+#X floatatom 105 590 5 0 0 0 - - -;
+#X floatatom 155 590 5 0 0 0 - - -;
+#X obj 55 564 route M myID x;
+#X obj 55 148 t a;
+#X obj 55 539 t a a;
+#X obj 102 539 print CAN;
+#X obj 55 495 CANparse;
+#X text 88 31 [CANpasrse] - extract messages from CANbus data;
+#X text 207 452 <-- clear all signals;
+#X text 377 412 <= add signal specifications;
+#X text 281 101 <= raw CANbus data as received from [CANreceive];
+#X obj 453 647 CANreceive;
+#X text 386 649 see also:;
+#X text 59 625 © 2018 IOhannes m zmölnig \, IEM;
+#X text 62 646 last updated for iemcan-0.1;
+#X text 405 464 you can add an arbitrary amount of signal specifications.
+;
+#X msg 55 93 0x100 133 223 133 31 16 0 0 31;
+#X msg 82 119 0x100 44 221 44 29 209 255 125 166;
+#X text 404 486 if a specification with the same <name> exists (in
+the same <can_id>) \, it will be overwritten. otherwise the new specification
+will be added.;
+#X text 140 200 name: name to use for outputting the value;
+#X text 140 220 can_id: to which can_id (symbol) the specification
+should be applied, f 92;
+#X text 140 260 length: length (in bits) the parameter takes in the
+raw CANbus data, f 92;
+#X text 140 240 start: start position (in bits) of the parameter in
+the raw CANbus data, f 92;
+#X text 140 320 factor: optional scale-factor (default: 1.);
+#X text 140 340 offset: optional value offset (default: 0.);
+#X msg 195 521 signal 1;
+#X text 82 174 signal specifications: signal <name:s> <can_id:s> <start:i>
+<length:i> <little?:b> <signed?:b> [<factor:f> <offset:f>], f 122
+;
+#X text 140 280 little?: endianness (little-endian(1) \, big-endian(0)).
+big-endian data is currently not supported., f 99;
+#X msg 158 390 signal M 0x100 16 13 1 - 0.25 0;
+#X msg 158 410 signal myID 0x100 32 16 1 -;
+#X msg 158 430 signal x 0x100 48 8 1 + 0.4 0;
+#X text 140 300 signed?: whether the parameter is signed(- \, 1) or
+unsigned(+ \, 0), f 92;
+#X connect 0 0 9 0;
+#X connect 1 0 0 0;
+#X connect 5 0 2 0;
+#X connect 5 1 3 0;
+#X connect 5 2 4 0;
+#X connect 6 0 9 0;
+#X connect 7 0 5 0;
+#X connect 7 1 8 0;
+#X connect 9 0 7 0;
+#X connect 19 0 6 0;
+#X connect 20 0 6 0;
+#X connect 28 0 9 0;
+#X connect 31 0 0 0;
+#X connect 32 0 0 0;
+#X connect 33 0 0 0;
