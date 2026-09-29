@@ -36,8 +36,6 @@ static DWORD WINAPI win_can_read_thread(LPVOID lpParam) {
         BYTE bRet = UcanReadCanMsg(g_hUcan, &canMsg);
 
         if (bRet == USBCAN_SUCCESSFUL) {
-            post("iemcan (Win): Frame empfangen! ID: 0x%X, DLC: %d", canMsg.m_dwID, canMsg.m_bDLC);
-
             EnterCriticalSection(&g_cs);
             for (int i = 0; i < g_backend_count; i++) {
                 t_can_backend *b = g_backends[i];
