@@ -12,15 +12,21 @@
 #include <string.h>
 #include <stdio.h>
 
+#define MAX_FILTERS 64
+
 struct _can_backend {
     void *pd_obj;
     t_outlet *msgout;
     t_outlet *errout;
     int sockfd;
     int is_connected;
+
+    // Cache für Filterregeln
+    struct can_filter filters[MAX_FILTERS];
+    int filter_count;
 };
 
-// Pure Data Polling-Callback (wird direkt vom Pd-Scheduler aufgerufen)
+// Polling-Callback für den Pd-Hauptthread
 static void linux_can_poll_callback(t_can_backend *b, int fd) {
     if (!b || !b->msgout || fd < 0) return;
 
@@ -28,8 +34,8 @@ static void linux_can_poll_callback(t_can_backend *b, int fd) {
     ssize_t nbytes = read(fd, &frame, sizeof(struct can_frame));
 
     if (nbytes == sizeof(struct can_frame)) {
-        // Generiere ID-Symbol (z.B. "0x17C")
         unsigned int can_id = frame.can_id & CAN_EFF_MASK;
+
         char idbuf[32];
         snprintf(idbuf, sizeof(idbuf), "0x%X", can_id);
         t_symbol *s_id = gensym(idbuf);
@@ -40,8 +46,26 @@ static void linux_can_poll_callback(t_can_backend *b, int fd) {
             SETFLOAT(&argv[i], frame.data[i]);
         }
 
-        // Direktes Dispatching ohne Thread-Overhead / ohne Ringbuffer
         outlet_anything(b->msgout, s_id, dlc, argv);
+    }
+}
+
+// Hilfsfunktion: Überträgt die geparsten Filter im Kernel-Socket
+static void apply_filters_to_socket(t_can_backend *b) {
+    if (!b || b->sockfd < 0) return;
+
+    if (b->filter_count > 0) {
+        if (setsockopt(b->sockfd, SOL_CAN_RAW, CAN_RAW_FILTER, b->filters, b->filter_count * sizeof(struct can_filter)) < 0) {
+            pd_error(b->pd_obj, "iemcan (Linux): Fehler beim Setzen der Kernel-Filter!");
+        } else {
+            post("iemcan (Linux): %d Kernel-Filterregeln angewendet.", b->filter_count);
+        }
+    } else {
+        // Keinerlei Filter gesetzt -> Alle Nachrichten akzeptieren
+        struct can_filter default_filter;
+        default_filter.can_id = 0;
+        default_filter.can_mask = 0;
+        setsockopt(b->sockfd, SOL_CAN_RAW, CAN_RAW_FILTER, &default_filter, sizeof(default_filter));
     }
 }
 
@@ -54,8 +78,56 @@ t_can_backend* can_backend_init(void *pd_obj, t_outlet *msgout, t_outlet *errout
     b->errout = errout;
     b->sockfd = -1;
     b->is_connected = 0;
+    b->filter_count = 0;
 
     return b;
+}
+
+void can_backend_set_filter(t_can_backend *b, int argc, t_atom *argv) {
+    if (!b) return;
+
+    b->filter_count = 0;
+
+    if (argc >= 1) {
+        int start_idx = 0;
+        // Ignoriere ein führendes "||" oder "&&" (Original-Syntax)
+        if (argv[0].a_type == A_SYMBOL) {
+            const char *op = atom_getsymbol(&argv[0])->s_name;
+            if (strcmp(op, "||") == 0 || strcmp(op, "&&") == 0) {
+                start_idx = 1;
+            }
+        }
+
+        for (int i = start_idx; i < argc && b->filter_count < MAX_FILTERS; i++) {
+            if (argv[i].a_type == A_SYMBOL) {
+                const char *ptr = atom_getsymbol(&argv[i])->s_name;
+                unsigned int id = 0, mask = 0;
+
+                // Syntax "0x2BC:7FF"
+                if (sscanf(ptr, "0x%x:%x", &id, &mask) == 2) {
+                    b->filters[b->filter_count].can_id = id;
+                    b->filters[b->filter_count].can_mask = mask & ~CAN_ERR_FLAG;
+                    b->filter_count++;
+                } 
+                // Einfache Syntax "0x2BC"
+                else if (sscanf(ptr, "0x%x", &id) == 1) {
+                    b->filters[b->filter_count].can_id = id;
+                    b->filters[b->filter_count].can_mask = (id > 0x7FF) ? CAN_EFF_MASK : CAN_SFF_MASK;
+                    b->filter_count++;
+                }
+            } else if (argv[i].a_type == A_FLOAT) {
+                unsigned int id = (unsigned int)atom_getfloat(&argv[i]);
+                b->filters[b->filter_count].can_id = id;
+                b->filters[b->filter_count].can_mask = (id > 0x7FF) ? CAN_EFF_MASK : CAN_SFF_MASK;
+                b->filter_count++;
+            }
+        }
+    }
+
+    // Wenn der Socket bereits geöffnet ist, den Filter sofort im Kernel aktualisieren
+    if (b->sockfd >= 0) {
+        apply_filters_to_socket(b);
+    }
 }
 
 int can_backend_connect(t_can_backend *b, const char *device_or_channel) {
@@ -84,19 +156,22 @@ int can_backend_connect(t_can_backend *b, const char *device_or_channel) {
     addr.can_family = AF_CAN;
     addr.can_ifindex = ifr.ifr_ifindex;
 
+    b->sockfd = s;
+
+    // Filter anwenden (vor dem Bind / während der Verbindung)
+    apply_filters_to_socket(b);
+
     if (bind(s, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         pd_error(b->pd_obj, "iemcan (Linux): Bind an '%s' fehlgeschlagen", ifname);
         close(s);
+        b->sockfd = -1;
         return 0;
     }
 
-    b->sockfd = s;
     b->is_connected = 1;
-
-    // Registriert den Socket im Pd-Scheduler (keine eigenen Threads notwendig!)
     sys_addpollfn(b->sockfd, (t_fdpollfn)linux_can_poll_callback, b);
 
-    post("iemcan (Linux): Erfolgreich an %s gebunden (sys_addpollfn aktiv).", ifname);
+    post("iemcan (Linux): Verbindung mit %s hergestellt.", ifname);
     return 1;
 }
 
@@ -116,66 +191,6 @@ void can_backend_free(t_can_backend *b) {
     if (!b) return;
     can_backend_disconnect(b);
     free(b);
-}
-
-// Setzt den SocketCAN-Filter direkt im Linux-Kernel nach Original-Syntax (0xID:MASKE)
-void can_backend_set_filter(t_can_backend *b, int argc, t_atom *argv) {
-    if (!b || b->sockfd < 0) return;
-
-    if (argc < 1) {
-        // Filter zurücksetzen (Match All)
-        struct can_filter filter;
-        filter.can_id = 0;
-        filter.can_mask = 0;
-        setsockopt(b->sockfd, SOL_CAN_RAW, CAN_RAW_FILTER, &filter, sizeof(filter));
-        return;
-    }
-
-    int num_filters = argc;
-    struct can_filter *rfilter = calloc(num_filters, sizeof(struct can_filter));
-    int valid_filters = 0;
-
-    // Erster Parameter kann "||" oder "&&" sein
-    int start_idx = 0;
-    if (argv[0].a_type == A_SYMBOL) {
-        const char *op = atom_getsymbol(&argv[0])->s_name;
-        if (strcmp(op, "||") == 0 || strcmp(op, "&&") == 0) {
-            start_idx = 1;
-        }
-    }
-
-    for (int i = start_idx; i < argc; i++) {
-        if (argv[i].a_type == A_SYMBOL) {
-            const char *ptr = atom_getsymbol(&argv[i])->s_name;
-            unsigned int id = 0, mask = 0;
-
-            if (sscanf(ptr, "0x%x:%x", &id, &mask) == 2) {
-                rfilter[valid_filters].can_id = id;
-                rfilter[valid_filters].can_mask = mask & ~CAN_ERR_FLAG;
-                valid_filters++;
-            } else if (sscanf(ptr, "0x%x", &id) == 1) {
-                // Fallback, falls nur die ID eingegeben wird: Exakter Match
-                rfilter[valid_filters].can_id = id;
-                rfilter[valid_filters].can_mask = (id > 0x7FF) ? CAN_EFF_MASK : CAN_SFF_MASK;
-                valid_filters++;
-            }
-        } else if (argv[i].a_type == A_FLOAT) {
-            unsigned int id = (unsigned int)atom_getfloat(&argv[i]);
-            rfilter[valid_filters].can_id = id;
-            rfilter[valid_filters].can_mask = (id > 0x7FF) ? CAN_EFF_MASK : CAN_SFF_MASK;
-            valid_filters++;
-        }
-    }
-
-    if (valid_filters > 0) {
-        if (setsockopt(b->sockfd, SOL_CAN_RAW, CAN_RAW_FILTER, rfilter, valid_filters * sizeof(struct can_filter)) < 0) {
-            pd_error(b->pd_obj, "iemcan (Linux): Fehler bei setsockopt CAN_RAW_FILTER");
-        } else {
-            post("iemcan (Linux): %d Kernel-Filterregeln angewendet.", valid_filters);
-        }
-    }
-
-    free(rfilter);
 }
 
 int can_backend_send(t_can_backend *b, unsigned int can_id, int dlc, const unsigned char *data) {
@@ -198,7 +213,7 @@ int can_backend_send(t_can_backend *b, unsigned int can_id, int dlc, const unsig
     }
 
     if (write(b->sockfd, &frame, sizeof(struct can_frame)) != sizeof(struct can_frame)) {
-        pd_error(b->pd_obj, "CANsend (Linux): Sende-Fehler");
+        pd_error(b->pd_obj, "CANsend (Linux): Fehler beim Senden");
         return 0;
     }
 
