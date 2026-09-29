@@ -13,8 +13,9 @@ typedef struct _socketcanrecv {
 
 static void socketcanrecv_filter(t_socketcanrecv *x, t_symbol *s, int argc, t_atom *argv) {
     (void)s;
-    // Falls Sie Filter-Funktionalität nutzen möchten, leiten Sie hier an das Backend weiter
-    // can_backend_set_filter(x->backend, argc, argv);
+    if (x && x->backend) {
+        can_backend_set_filter(x->backend, argc, argv);
+    }
 }
 
 static void socketcanrecv_connect(t_socketcanrecv *x, t_symbol *s) {
