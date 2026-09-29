@@ -23,25 +23,31 @@ struct _can_backend {
     int sockfd;
 };
 
-// Callback für eingehende Daten aus dem SocketCAN FD
+// Callback für eingehende Daten aus dem SocketCAN-Socket
 static void linux_can_read(t_can_backend *b, int fd) {
     if (!b || fd < 0) return;
 
     struct canfd_frame cfd;
-    ssize_t nbytes = read(fd, &cfd, CANFD_MTU);
+    memset(&cfd, 0, sizeof(cfd));
 
-    if (nbytes < (ssize_t)CAN_MTU) {
-        pd_error(b->pd_obj, "CAN-Backend (Linux): Ungültiger CAN/CANFD Frame gelesen");
+    // Versuchen, bis zu CANFD_MTU zu lesen
+    ssize_t nbytes = read(fd, &cfd, sizeof(cfd));
+
+    // Ein gültiger Frame muss mindestens die Länge eines Standard CAN_MTU haben
+    if (nbytes < (ssize_t)sizeof(struct can_frame)) {
+        pd_error(b->pd_obj, "CAN-Backend (Linux): Unvollständiger CAN-Frame gelesen (%zd Bytes)", nbytes);
         return;
     }
 
-    // Standard- / Extended- / Error-ID extrahieren
-    unsigned int can_id = cfd.can_id & CAN_EFF_MASK;
+    // CAN-ID vorbereiten (Maskieren von Flags wie Extended, RTR, ERR)
+    unsigned int raw_id = cfd.can_id;
+    unsigned int can_id = (raw_id & CAN_EFF_FLAG) ? (raw_id & CAN_EFF_MASK) : (raw_id & CAN_SFF_MASK);
+
     char idbuf[32];
     snprintf(idbuf, sizeof(idbuf), "0x%X", can_id);
 
-    // Behandlung von Remote-Transmission-Request (RTR)
-    if (cfd.can_id & CAN_RTR_FLAG) {
+    // 1. Remote Transmission Request (RTR)
+    if (raw_id & CAN_RTR_FLAG) {
         if (b->errout) {
             t_atom rtr_atom;
             SETSYMBOL(&rtr_atom, gensym(idbuf));
@@ -50,8 +56,8 @@ static void linux_can_read(t_can_backend *b, int fd) {
         return;
     }
 
-    // Behandlung von CAN Error-Frames
-    if (cfd.can_id & CAN_ERR_FLAG) {
+    // 2. CAN Error Frames
+    if (raw_id & CAN_ERR_FLAG) {
         if (b->errout) {
             t_atom err_atom;
             SETSYMBOL(&err_atom, gensym(idbuf));
@@ -60,14 +66,16 @@ static void linux_can_read(t_can_backend *b, int fd) {
         return;
     }
 
-    // Daten-Nutzlast an Pd senden
-    int dlc = cfd.len > 8 ? 8 : cfd.len;
+    // 3. Reguläre Daten-Nachricht
+    int dlc = cfd.len;
+    if (dlc > 8 && nbytes == sizeof(struct can_frame)) {
+        dlc = 8; // Abfangschutz für Standard CAN Frames
+    }
+
     t_atom out_atoms[9];
-    
-    // Das ID-Symbol an Index 0 setzen
     SETSYMBOL(&out_atoms[0], gensym(idbuf));
 
-    for (int i = 0; i < dlc; i++) {
+    for (int i = 0; i < dlc && i < 8; i++) {
         SETFLOAT(&out_atoms[1 + i], cfd.data[i]);
     }
 
