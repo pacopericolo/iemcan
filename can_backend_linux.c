@@ -92,10 +92,7 @@ void can_backend_set_filter(t_can_backend *b, int argc, t_atom *argv) {
 
     b->filter_count = 0;
 
-    post("--- iemcan DEBUG FILTER ---");
-    post("Anzahl Argumente (argc): %d", argc);
-
-    for (int i = 0; i < argc; i++) {
+    /*for (int i = 0; i < argc; i++) {
         if (argv[i].a_type == A_SYMBOL) {
             post("Arg %d: Typ SYMBOL | Wert: '%s'", i, atom_getsymbol(&argv[i])->s_name);
         } else if (argv[i].a_type == A_FLOAT) {
@@ -103,7 +100,7 @@ void can_backend_set_filter(t_can_backend *b, int argc, t_atom *argv) {
         } else {
             post("Arg %d: Unbekannter Typ: %d", i, argv[i].a_type);
         }
-    }
+    }*/
 
     for (int i = 0; i < argc && b->filter_count < MAX_FILTERS; i++) {
         unsigned int id = 0, mask = 0;
@@ -129,7 +126,7 @@ void can_backend_set_filter(t_can_backend *b, int argc, t_atom *argv) {
     }
 
     post("Erkannte Filterregeln (filter_count): %d", b->filter_count);
-    post("---------------------------");
+    //post("---------------------------");
 
     if (b->sockfd >= 0) {
         apply_filters_to_socket(b);
