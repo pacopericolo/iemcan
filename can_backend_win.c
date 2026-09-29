@@ -7,11 +7,17 @@
 
 #include "USBCAN32.h"
 
+#define MAX_FILTERS 64
+
 struct _can_backend {
     void *pd_obj;
     t_outlet *msgout;
     t_outlet *errout;
     int is_connected;
+    
+    // Filter-Speicher
+    unsigned int filter_ids[MAX_FILTERS];
+    int filter_count;
 };
 
 static tUcanHandle g_hUcan = USBCAN_INVALID_HANDLE;
@@ -25,14 +31,27 @@ static int g_backend_count = 0;
 static CRITICAL_SECTION g_cs;
 static int g_cs_initialized = 0;
 
+// Hilfsfunktion: Prüft, ob eine CAN-ID durchgelassen werden darf
+static int is_id_allowed(t_can_backend *b, unsigned int can_id) {
+    // Wenn kein Filter gesetzt ist (count == 0), lassen wir wie gehabt ALLES durch
+    if (b->filter_count == 0) {
+        return 1;
+    }
+
+    // Wenn Filter definiert sind, prüfen wir auf Übereinstimmung
+    for (int i = 0; i < b->filter_count; i++) {
+        if (b->filter_ids[i] == can_id) {
+            return 1;
+        }
+    }
+    return 0; // ID nicht in der Liste -> verwerfen
+}
+
 static DWORD WINAPI win_can_read_thread(LPVOID lpParam) {
     (void)lpParam;
     tCanMsgStruct canMsg;
 
-    post("iemcan (Win): Empfangs-Thread aktiv. Warte auf Frames...");
-
     while (g_thread_running) {
-        // UcanReadCanMsg nutzt direkt das Hardware-Handle ohne falschen Channel-Zeiger
         BYTE bRet = UcanReadCanMsg(g_hUcan, &canMsg);
 
         if (bRet == USBCAN_SUCCESSFUL) {
@@ -41,6 +60,12 @@ static DWORD WINAPI win_can_read_thread(LPVOID lpParam) {
                 t_can_backend *b = g_backends[i];
                 if (b && b->msgout && b->is_connected) {
                     unsigned int can_id = canMsg.m_dwID;
+
+                    // FILTER-CHECK: Nachrichten verworfen, wenn ID nicht gefordert ist!
+                    if (!is_id_allowed(b, can_id)) {
+                        continue;
+                    }
+
                     int dlc = canMsg.m_bDLC > 8 ? 8 : canMsg.m_bDLC;
 
                     char idbuf[32];
@@ -57,10 +82,6 @@ static DWORD WINAPI win_can_read_thread(LPVOID lpParam) {
             }
             LeaveCriticalSection(&g_cs);
         } else if (bRet != USBCAN_WARN_NODATA) {
-            static int err_count = 0;
-            if (err_count++ < 10) {
-                post("iemcan (Win): UcanReadCanMsg Fehler-Code: %d (0x%X)", bRet, bRet);
-            }
             Sleep(5);
         } else {
             Sleep(1);
@@ -77,6 +98,7 @@ t_can_backend* can_backend_init(void *pd_obj, t_outlet *msgout, t_outlet *errout
     b->msgout = msgout;
     b->errout = errout;
     b->is_connected = 0;
+    b->filter_count = 0;
 
     if (!g_cs_initialized) {
         InitializeCriticalSection(&g_cs);
@@ -84,6 +106,30 @@ t_can_backend* can_backend_init(void *pd_obj, t_outlet *msgout, t_outlet *errout
     }
 
     return b;
+}
+
+// Implementierung der Filterfunktion für Pd-Messages wie "filter 0x101 0x200 0x17C"
+void can_backend_set_filter(t_can_backend *b, int argc, t_atom *argv) {
+    if (!b) return;
+
+    EnterCriticalSection(&g_cs);
+    b->filter_count = 0; // Alte Filter verwerfen
+
+    for (int i = 0; i < argc && i < MAX_FILTERS; i++) {
+        if (argv[i].a_type == A_FLOAT) {
+            b->filter_ids[b->filter_count++] = (unsigned int)atom_getfloat(&argv[i]);
+        } else if (argv[i].a_type == A_SYMBOL) {
+            const char *sym = atom_getsymbol(&argv[i])->s_name;
+            unsigned int id = 0;
+            // Unterstützt Hex ("0x17C") und Dezimal
+            if (sscanf(sym, "0x%x", &id) == 1 || sscanf(sym, "%u", &id) == 1) {
+                b->filter_ids[b->filter_count++] = id;
+            }
+        }
+    }
+    LeaveCriticalSection(&g_cs);
+
+    post("iemcan: %d Filter-ID(s) gesetzt.", b->filter_count);
 }
 
 int can_backend_connect(t_can_backend *b, const char *device_or_channel) {
@@ -192,10 +238,6 @@ void can_backend_free(t_can_backend *b) {
     if (!b) return;
     can_backend_disconnect(b);
     free(b);
-}
-
-void can_backend_set_filter(t_can_backend *b, int argc, t_atom *argv) {
-    (void)b; (void)argc; (void)argv;
 }
 
 int can_backend_send(t_can_backend *b, unsigned int can_id, int dlc, const unsigned char *data) {
