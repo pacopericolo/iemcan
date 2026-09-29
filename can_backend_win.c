@@ -29,29 +29,24 @@ static DWORD WINAPI win_can_read_thread(LPVOID lpParam) {
     (void)lpParam;
     tCanMsgStruct canMsg;
 
-    post("iemcan (Win): Empfangs-Thread ERFOLGREICH GESTARTET!");
+    post("iemcan (Win): Empfangs-Thread aktiv. Warte auf Frames...");
 
     while (g_thread_running) {
+        // Versuche Kanal 0 zu lesen
         BYTE bRet = UcanReadCanMsgEx(g_hUcan, USBCAN_CHANNEL_CH0, &canMsg, NULL);
+
+        // Falls Kanal 0 keine Daten liefert, probiere Kanal 1 (falls Dual-Channel Hardware)
+        if (bRet == USBCAN_WARN_NODATA) {
+            bRet = UcanReadCanMsgEx(g_hUcan, USBCAN_CHANNEL_CH1, &canMsg, NULL);
+        }
 
         if (bRet == USBCAN_SUCCESSFUL) {
             post("iemcan (Win): Frame empfangen! ID: 0x%X, DLC: %d", canMsg.m_dwID, canMsg.m_bDLC);
 
             EnterCriticalSection(&g_cs);
-            post("iemcan (Win): Registrierte Backends: %d", g_backend_count);
-
             for (int i = 0; i < g_backend_count; i++) {
                 t_can_backend *b = g_backends[i];
-                
-                if (!b) {
-                    post("iemcan (Win): Backend [%d] ist NULL!", i);
-                    continue;
-                }
-
-                post("iemcan (Win): Backend [%d] -> msgout: %p, is_connected: %d", 
-                     i, b->msgout, b->is_connected);
-
-                if (b->msgout && b->is_connected) {
+                if (b && b->msgout && b->is_connected) {
                     unsigned int can_id = canMsg.m_dwID;
                     int dlc = canMsg.m_bDLC > 8 ? 8 : canMsg.m_bDLC;
 
@@ -65,13 +60,20 @@ static DWORD WINAPI win_can_read_thread(LPVOID lpParam) {
                     }
 
                     outlet_anything(b->msgout, s_id, dlc, argv);
-                    post("iemcan (Win): Daten erfolgreich an outlet_anything übergeben!");
                 }
             }
             LeaveCriticalSection(&g_cs);
+        } else if (bRet != USBCAN_WARN_NODATA) {
+            // Ein echter Read-Fehler ist aufgetreten!
+            static int err_count = 0;
+            if (err_count++ < 10) { // Nur die ersten 10 Fehler ausgeben, um Console nicht zu überfluten
+                post("iemcan (Win): UcanReadCanMsgEx Fehler-Code: %d (0x%X)", bRet, bRet);
+            }
+            Sleep(5);
+        } else {
+            Sleep(1);
         }
     }
-    post("iemcan (Win): Empfangs-Thread BEENDET.");
     return 0;
 }
 
@@ -130,7 +132,7 @@ int can_backend_connect(t_can_backend *b, const char *device_or_channel) {
     memset(&InitParam, 0, sizeof(InitParam));
 
     InitParam.m_dwSize               = sizeof(InitParam);
-    InitParam.m_bMode                = 0; // kUcanModeNormal
+    InitParam.m_bMode                = USBCAN_MODE_NORMAL; // kUcanModeNormal
     InitParam.m_bBTR0                = HIBYTE(USBCAN_BAUD_500kBit); // Testweise auf 250k
     InitParam.m_bBTR1                = LOBYTE(USBCAN_BAUD_500kBit);
     InitParam.m_bOCR                 = 0x1A;
