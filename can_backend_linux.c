@@ -4,16 +4,12 @@
 
 #include <linux/can.h>
 #include <linux/can/raw.h>
-#include <linux/can/error.h>
-
-#include <sys/types.h>
 #include <sys/socket.h>
-#include <unistd.h>
-#include <errno.h>
-#include <string.h>
 #include <sys/ioctl.h>
 #include <net/if.h>
+#include <unistd.h>
 #include <stdlib.h>
+#include <string.h>
 #include <stdio.h>
 
 struct _can_backend {
@@ -21,66 +17,31 @@ struct _can_backend {
     t_outlet *msgout;
     t_outlet *errout;
     int sockfd;
+    int is_connected;
 };
 
-// Callback für eingehende Daten aus dem SocketCAN-Socket
-static void linux_can_read(t_can_backend *b, int fd) {
-    if (!b || fd < 0) return;
+// Pure Data Polling-Callback (wird direkt vom Pd-Scheduler aufgerufen)
+static void linux_can_poll_callback(t_can_backend *b, int fd) {
+    if (!b || !b->msgout || fd < 0) return;
 
-    struct canfd_frame cfd;
-    memset(&cfd, 0, sizeof(cfd));
+    struct can_frame frame;
+    ssize_t nbytes = read(fd, &frame, sizeof(struct can_frame));
 
-    // Versuchen, bis zu CANFD_MTU zu lesen
-    ssize_t nbytes = read(fd, &cfd, sizeof(cfd));
+    if (nbytes == sizeof(struct can_frame)) {
+        // Generiere ID-Symbol (z.B. "0x17C")
+        unsigned int can_id = frame.can_id & CAN_EFF_MASK;
+        char idbuf[32];
+        snprintf(idbuf, sizeof(idbuf), "0x%X", can_id);
+        t_symbol *s_id = gensym(idbuf);
 
-    // Ein gültiger Frame muss mindestens die Länge eines Standard CAN_MTU haben
-    if (nbytes < (ssize_t)sizeof(struct can_frame)) {
-        pd_error(b->pd_obj, "CAN-Backend (Linux): Unvollständiger CAN-Frame gelesen (%zd Bytes)", nbytes);
-        return;
-    }
-
-    // CAN-ID vorbereiten (Maskieren von Flags wie Extended, RTR, ERR)
-    unsigned int raw_id = cfd.can_id;
-    unsigned int can_id = (raw_id & CAN_EFF_FLAG) ? (raw_id & CAN_EFF_MASK) : (raw_id & CAN_SFF_MASK);
-
-    char idbuf[32];
-    snprintf(idbuf, sizeof(idbuf), "0x%X", can_id);
-
-    // 1. Remote Transmission Request (RTR)
-    if (raw_id & CAN_RTR_FLAG) {
-        if (b->errout) {
-            t_atom rtr_atom;
-            SETSYMBOL(&rtr_atom, gensym(idbuf));
-            outlet_anything(b->errout, gensym("RTR"), 1, &rtr_atom);
+        int dlc = frame.can_dlc > 8 ? 8 : frame.can_dlc;
+        t_atom argv[8];
+        for (int i = 0; i < dlc; i++) {
+            SETFLOAT(&argv[i], frame.data[i]);
         }
-        return;
-    }
 
-    // 2. CAN Error Frames
-    if (raw_id & CAN_ERR_FLAG) {
-        if (b->errout) {
-            t_atom err_atom;
-            SETSYMBOL(&err_atom, gensym(idbuf));
-            outlet_anything(b->errout, gensym("error"), 1, &err_atom);
-        }
-        return;
-    }
-
-    // 3. Reguläre Daten-Nachricht
-    int dlc = cfd.len;
-    if (dlc > 8 && nbytes == sizeof(struct can_frame)) {
-        dlc = 8; // Abfangschutz für Standard CAN Frames
-    }
-
-    t_atom out_atoms[8]; // Nur die Datenbytes als Atoms
-
-    for (int i = 0; i < dlc && i < 8; i++) {
-        SETFLOAT(&out_atoms[i], cfd.data[i]);
-    }
-
-    if (b->msgout) {
-        // ID als Selector-Symbol (1. Argument) und Datenbytes als Liste (restliche Argumente)
-        outlet_anything(b->msgout, gensym(idbuf), dlc, out_atoms);
+        // Direktes Dispatching ohne Thread-Overhead / ohne Ringbuffer
+        outlet_anything(b->msgout, s_id, dlc, argv);
     }
 }
 
@@ -92,70 +53,63 @@ t_can_backend* can_backend_init(void *pd_obj, t_outlet *msgout, t_outlet *errout
     b->msgout = msgout;
     b->errout = errout;
     b->sockfd = -1;
+    b->is_connected = 0;
 
     return b;
 }
 
 int can_backend_connect(t_can_backend *b, const char *device_or_channel) {
     if (!b) return 0;
+    if (b->is_connected) return 1;
 
-    if (b->sockfd >= 0) {
-        can_backend_disconnect(b);
+    int s = socket(PF_CAN, SOCK_RAW, CAN_RAW);
+    if (s < 0) {
+        pd_error(b->pd_obj, "iemcan (Linux): Socket-Erstellung fehlgeschlagen");
+        return 0;
     }
 
-    int sfd = socket(PF_CAN, SOCK_RAW, CAN_RAW);
-    if (sfd < 0) {
-        pd_error(b->pd_obj, "CAN-Backend (Linux): Erstellen des SocketCAN Sockets fehlgeschlagen");
+    struct ifreq ifr;
+    const char *ifname = (device_or_channel && strlen(device_or_channel) > 0) ? device_or_channel : "can0";
+    strncpy(ifr.ifr_name, ifname, IFNAMSIZ - 1);
+    ifr.ifr_name[IFNAMSIZ - 1] = '\0';
+
+    if (ioctl(s, SIOCGIFINDEX, &ifr) < 0) {
+        pd_error(b->pd_obj, "iemcan (Linux): Interface '%s' nicht gefunden", ifname);
+        close(s);
         return 0;
     }
 
     struct sockaddr_can addr;
-    struct ifreq ifr;
     memset(&addr, 0, sizeof(addr));
     addr.can_family = AF_CAN;
+    addr.can_ifindex = ifr.ifr_ifindex;
 
-    if (device_or_channel && *device_or_channel) {
-        strncpy(ifr.ifr_name, device_or_channel, IFNAMSIZ - 1);
-        ifr.ifr_name[IFNAMSIZ - 1] = '\0';
-
-        if (ioctl(sfd, SIOCGIFINDEX, &ifr) < 0) {
-            pd_error(b->pd_obj, "CAN-Backend (Linux): Device '%s' nicht gefunden", device_or_channel);
-            close(sfd);
-            return 0;
-        }
-        addr.can_ifindex = ifr.ifr_ifindex;
-    } else {
-        addr.can_ifindex = 0; // Auf allen Schnittstellen lauschen
-    }
-
-    // CAN FD Funktionalität aktivieren
-    const int canfd_on = 1;
-    setsockopt(sfd, SOL_CAN_RAW, CAN_RAW_FD_FRAMES, &canfd_on, sizeof(canfd_on));
-
-    if (bind(sfd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        pd_error(b->pd_obj, "CAN-Backend (Linux): Binden an Device '%s' fehlgeschlagen", 
-                 (device_or_channel && *device_or_channel) ? device_or_channel : "<all>");
-        close(sfd);
+    if (bind(s, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        pd_error(b->pd_obj, "iemcan (Linux): Bind an '%s' fehlgeschlagen", ifname);
+        close(s);
         return 0;
     }
 
-    // In Pd Event-Loop für Lesezugriffe registrieren
-    sys_addpollfn(sfd, (t_fdpollfn)linux_can_read, b);
-    b->sockfd = sfd;
+    b->sockfd = s;
+    b->is_connected = 1;
 
-    post("CAN-Backend (Linux): Erfolgreich verbunden mit SocketCAN (%s)", 
-         (device_or_channel && *device_or_channel) ? device_or_channel : "all");
+    // Registriert den Socket im Pd-Scheduler (keine eigenen Threads notwendig!)
+    sys_addpollfn(b->sockfd, (t_fdpollfn)linux_can_poll_callback, b);
+
+    post("iemcan (Linux): Erfolgreich an %s gebunden (sys_addpollfn aktiv).", ifname);
     return 1;
 }
 
 void can_backend_disconnect(t_can_backend *b) {
-    if (!b || b->sockfd < 0) return;
+    if (!b || !b->is_connected) return;
 
-    sys_rmpollfn(b->sockfd);
-    sys_closesocket(b->sockfd);
-    b->sockfd = -1;
-
-    post("CAN-Backend (Linux): SocketCAN verbindung getrennt.");
+    if (b->sockfd >= 0) {
+        sys_rmpollfn(b->sockfd);
+        close(b->sockfd);
+        b->sockfd = -1;
+    }
+    b->is_connected = 0;
+    post("iemcan (Linux): Socket getrennt.");
 }
 
 void can_backend_free(t_can_backend *b) {
@@ -164,34 +118,87 @@ void can_backend_free(t_can_backend *b) {
     free(b);
 }
 
+// Setzt den SocketCAN-Filter direkt im Linux-Kernel nach Original-Syntax (0xID:MASKE)
 void can_backend_set_filter(t_can_backend *b, int argc, t_atom *argv) {
-    (void)argc; (void)argv;
     if (!b || b->sockfd < 0) return;
-    // Software-basiertes Filtering findet im plattformunabhängigen CANreceive statt
+
+    if (argc < 1) {
+        // Filter zurücksetzen (Match All)
+        struct can_filter filter;
+        filter.can_id = 0;
+        filter.can_mask = 0;
+        setsockopt(b->sockfd, SOL_CAN_RAW, CAN_RAW_FILTER, &filter, sizeof(filter));
+        return;
+    }
+
+    int num_filters = argc;
+    struct can_filter *rfilter = calloc(num_filters, sizeof(struct can_filter));
+    int valid_filters = 0;
+
+    // Erster Parameter kann "||" oder "&&" sein
+    int start_idx = 0;
+    if (argv[0].a_type == A_SYMBOL) {
+        const char *op = atom_getsymbol(&argv[0])->s_name;
+        if (strcmp(op, "||") == 0 || strcmp(op, "&&") == 0) {
+            start_idx = 1;
+        }
+    }
+
+    for (int i = start_idx; i < argc; i++) {
+        if (argv[i].a_type == A_SYMBOL) {
+            const char *ptr = atom_getsymbol(&argv[i])->s_name;
+            unsigned int id = 0, mask = 0;
+
+            if (sscanf(ptr, "0x%x:%x", &id, &mask) == 2) {
+                rfilter[valid_filters].can_id = id;
+                rfilter[valid_filters].can_mask = mask & ~CAN_ERR_FLAG;
+                valid_filters++;
+            } else if (sscanf(ptr, "0x%x", &id) == 1) {
+                // Fallback, falls nur die ID eingegeben wird: Exakter Match
+                rfilter[valid_filters].can_id = id;
+                rfilter[valid_filters].can_mask = (id > 0x7FF) ? CAN_EFF_MASK : CAN_SFF_MASK;
+                valid_filters++;
+            }
+        } else if (argv[i].a_type == A_FLOAT) {
+            unsigned int id = (unsigned int)atom_getfloat(&argv[i]);
+            rfilter[valid_filters].can_id = id;
+            rfilter[valid_filters].can_mask = (id > 0x7FF) ? CAN_EFF_MASK : CAN_SFF_MASK;
+            valid_filters++;
+        }
+    }
+
+    if (valid_filters > 0) {
+        if (setsockopt(b->sockfd, SOL_CAN_RAW, CAN_RAW_FILTER, rfilter, valid_filters * sizeof(struct can_filter)) < 0) {
+            pd_error(b->pd_obj, "iemcan (Linux): Fehler bei setsockopt CAN_RAW_FILTER");
+        } else {
+            post("iemcan (Linux): %d Kernel-Filterregeln angewendet.", valid_filters);
+        }
+    }
+
+    free(rfilter);
 }
 
 int can_backend_send(t_can_backend *b, unsigned int can_id, int dlc, const unsigned char *data) {
-    if (!b || b->sockfd < 0) {
+    if (!b || !b->is_connected || b->sockfd < 0) {
         pd_error(b ? b->pd_obj : NULL, "CANsend (Linux): Nicht verbunden!");
         return 0;
     }
 
-    struct canfd_frame frame;
+    struct can_frame frame;
     memset(&frame, 0, sizeof(frame));
 
     frame.can_id = can_id;
     if (can_id > 0x7FF) {
-        frame.can_id |= CAN_EFF_FLAG; // Extended Frame Format (29-Bit ID)
+        frame.can_id |= CAN_EFF_FLAG;
     }
 
-    frame.len = dlc > 8 ? 8 : dlc;
-    for (int i = 0; i < frame.len; i++) {
+    frame.can_dlc = dlc > 8 ? 8 : dlc;
+    for (int i = 0; i < frame.can_dlc; i++) {
         frame.data[i] = data[i];
     }
 
-    ssize_t bytes_sent = write(b->sockfd, &frame, CAN_MTU);
-    if (bytes_sent != CAN_MTU) {
-        pd_error(b->pd_obj, "CANsend (Linux): Fehler beim Schreiben auf SocketCAN");
+    if (write(b->sockfd, &frame, sizeof(struct can_frame)) != sizeof(struct can_frame)) {
+        pd_error(b->pd_obj, "CANsend (Linux): Sende-Fehler");
         return 0;
     }
 
