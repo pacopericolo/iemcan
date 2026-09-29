@@ -38,9 +38,20 @@ static DWORD WINAPI win_can_read_thread(LPVOID lpParam) {
             post("iemcan (Win): Frame empfangen! ID: 0x%X, DLC: %d", canMsg.m_dwID, canMsg.m_bDLC);
 
             EnterCriticalSection(&g_cs);
+            post("iemcan (Win): Registrierte Backends: %d", g_backend_count);
+
             for (int i = 0; i < g_backend_count; i++) {
                 t_can_backend *b = g_backends[i];
-                if (b && b->msgout && b->is_connected) {
+                
+                if (!b) {
+                    post("iemcan (Win): Backend [%d] ist NULL!", i);
+                    continue;
+                }
+
+                post("iemcan (Win): Backend [%d] -> msgout: %p, is_connected: %d", 
+                     i, b->msgout, b->is_connected);
+
+                if (b->msgout && b->is_connected) {
                     unsigned int can_id = canMsg.m_dwID;
                     int dlc = canMsg.m_bDLC > 8 ? 8 : canMsg.m_bDLC;
 
@@ -54,15 +65,10 @@ static DWORD WINAPI win_can_read_thread(LPVOID lpParam) {
                     }
 
                     outlet_anything(b->msgout, s_id, dlc, argv);
+                    post("iemcan (Win): Daten erfolgreich an outlet_anything übergeben!");
                 }
             }
             LeaveCriticalSection(&g_cs);
-        } else if (bRet != USBCAN_WARN_NODATA) {
-            // Zeige Fehler an, falls es nicht bloß ein leerer Puffer ist
-            // post("iemcan (Win): Read Error: %d", bRet);
-            Sleep(5);
-        } else {
-            Sleep(1);
         }
     }
     post("iemcan (Win): Empfangs-Thread BEENDET.");
