@@ -32,13 +32,8 @@ static DWORD WINAPI win_can_read_thread(LPVOID lpParam) {
     post("iemcan (Win): Empfangs-Thread aktiv. Warte auf Frames...");
 
     while (g_thread_running) {
-        // Versuche Kanal 0 zu lesen
-        BYTE bRet = UcanReadCanMsgEx(g_hUcan, USBCAN_CHANNEL_CH0, &canMsg, NULL);
-
-        // Falls Kanal 0 keine Daten liefert, probiere Kanal 1 (falls Dual-Channel Hardware)
-        if (bRet == USBCAN_WARN_NODATA) {
-            bRet = UcanReadCanMsgEx(g_hUcan, USBCAN_CHANNEL_CH1, &canMsg, NULL);
-        }
+        // UcanReadCanMsg nutzt direkt das Hardware-Handle ohne falschen Channel-Zeiger
+        BYTE bRet = UcanReadCanMsg(g_hUcan, &canMsg);
 
         if (bRet == USBCAN_SUCCESSFUL) {
             post("iemcan (Win): Frame empfangen! ID: 0x%X, DLC: %d", canMsg.m_dwID, canMsg.m_bDLC);
@@ -64,10 +59,9 @@ static DWORD WINAPI win_can_read_thread(LPVOID lpParam) {
             }
             LeaveCriticalSection(&g_cs);
         } else if (bRet != USBCAN_WARN_NODATA) {
-            // Ein echter Read-Fehler ist aufgetreten!
             static int err_count = 0;
-            if (err_count++ < 10) { // Nur die ersten 10 Fehler ausgeben, um Console nicht zu überfluten
-                post("iemcan (Win): UcanReadCanMsgEx Fehler-Code: %d (0x%X)", bRet, bRet);
+            if (err_count++ < 10) {
+                post("iemcan (Win): UcanReadCanMsg Fehler-Code: %d (0x%X)", bRet, bRet);
             }
             Sleep(5);
         } else {
@@ -102,7 +96,6 @@ int can_backend_connect(t_can_backend *b, const char *device_or_channel) {
 
     EnterCriticalSection(&g_cs);
 
-    // Wenn Hardware schon offen ist:
     if (g_hUcan != USBCAN_INVALID_HANDLE) {
         g_refcount++;
         b->is_connected = 1;
@@ -116,7 +109,6 @@ int can_backend_connect(t_can_backend *b, const char *device_or_channel) {
         return 1;
     }
 
-    // Hardware initialisieren
     BYTE bDeviceNr = USBCAN_ANY_MODULE;
     BYTE bRet = UcanInitHardwareEx(&g_hUcan, bDeviceNr, NULL, NULL);
 
@@ -126,14 +118,12 @@ int can_backend_connect(t_can_backend *b, const char *device_or_channel) {
         return 0;
     }
 
-    post("iemcan (Win): UcanInitHardwareEx ERFOLGREICH (Handle: %p)", g_hUcan);
-
     tUcanInitCanParam InitParam;
     memset(&InitParam, 0, sizeof(InitParam));
 
     InitParam.m_dwSize               = sizeof(InitParam);
-    InitParam.m_bMode                = 0; // kUcanModeNormal
-    InitParam.m_bBTR0                = HIBYTE(USBCAN_BAUD_500kBit); // Testweise auf 250k
+    InitParam.m_bMode                = 0;
+    InitParam.m_bBTR0                = HIBYTE(USBCAN_BAUD_500kBit);
     InitParam.m_bBTR1                = LOBYTE(USBCAN_BAUD_500kBit);
     InitParam.m_bOCR                 = 0x1A;
     InitParam.m_dwAMR                = USBCAN_AMR_ALL;
@@ -151,15 +141,8 @@ int can_backend_connect(t_can_backend *b, const char *device_or_channel) {
         return 0;
     }
 
-    post("iemcan (Win): UcanInitCanEx ERFOLGREICH");
-
-    // Empfangsthread starten
     g_thread_running = 1;
     g_hThread = CreateThread(NULL, 0, win_can_read_thread, NULL, 0, NULL);
-
-    if (g_hThread == NULL) {
-        pd_error(b->pd_obj, "iemcan (Win): FEHLER beim Erstellen des Windows-Threads!");
-    }
 
     if (g_backend_count < MAX_BACKENDS) {
         g_backends[g_backend_count++] = b;
@@ -170,7 +153,7 @@ int can_backend_connect(t_can_backend *b, const char *device_or_channel) {
 
     LeaveCriticalSection(&g_cs);
 
-    post("iemcan (Win): Hardware vollständig verbunden.");
+    post("iemcan (Win): Hardware vollständig verbunden (500 kBit/s).");
     return 1;
 }
 
@@ -198,7 +181,7 @@ void can_backend_disconnect(t_can_backend *b) {
             g_hThread = NULL;
         }
 
-        UcanDeinitCanEx(g_hUcan, USBCAN_CHANNEL_CH0);
+        UcanDeinitCan(g_hUcan);
         UcanDeinitHardware(g_hUcan);
         g_hUcan = USBCAN_INVALID_HANDLE;
         post("iemcan (Win): Hardware getrennt.");
@@ -234,9 +217,9 @@ int can_backend_send(t_can_backend *b, unsigned int can_id, int dlc, const unsig
         canMsg.m_bData[i] = data[i];
     }
 
-    BYTE bRet = UcanWriteCanMsgEx(g_hUcan, USBCAN_CHANNEL_CH0, &canMsg, NULL);
+    BYTE bRet = UcanWriteCanMsg(g_hUcan, &canMsg);
     if (bRet != USBCAN_SUCCESSFUL) {
-        pd_error(b->pd_obj, "CANsend: Fehler bei UcanWriteCanMsgEx (%d)", bRet);
+        pd_error(b->pd_obj, "CANsend: Fehler bei UcanWriteCanMsg (%d)", bRet);
         return 0;
     }
 
