@@ -14,31 +14,28 @@ struct _can_backend {
     int is_connected;
 };
 
-// Globaler Singleton-Speicher für das gemeinsame Systec-Handle
 static tUcanHandle g_hUcan = USBCAN_INVALID_HANDLE;
 static int g_refcount = 0;
 static HANDLE g_hThread = NULL;
 static volatile int g_thread_running = 0;
 
-// Registrierte Objekt-Backends für das Weiterleiten von Empfangsdaten
 #define MAX_BACKENDS 16
 static t_can_backend* g_backends[MAX_BACKENDS];
 static int g_backend_count = 0;
 static CRITICAL_SECTION g_cs;
 static int g_cs_initialized = 0;
 
-// Windows Thread zum kontinuierlichen Empfang
 static DWORD WINAPI win_can_read_thread(LPVOID lpParam) {
     (void)lpParam;
     tCanMsgStruct canMsg;
 
-    post("CAN-Backend (Win): Empfangs-Thread gestartet.");
+    post("iemcan (Win): Empfangs-Thread ERFOLGREICH GESTARTET!");
 
     while (g_thread_running) {
         BYTE bRet = UcanReadCanMsgEx(g_hUcan, USBCAN_CHANNEL_CH0, &canMsg, NULL);
 
         if (bRet == USBCAN_SUCCESSFUL) {
-            post("CAN-Backend (Win): Paket empfangen! ID: 0x%X", canMsg.m_dwID);
+            post("iemcan (Win): Frame empfangen! ID: 0x%X, DLC: %d", canMsg.m_dwID, canMsg.m_bDLC);
 
             EnterCriticalSection(&g_cs);
             for (int i = 0; i < g_backend_count; i++) {
@@ -60,10 +57,15 @@ static DWORD WINAPI win_can_read_thread(LPVOID lpParam) {
                 }
             }
             LeaveCriticalSection(&g_cs);
+        } else if (bRet != USBCAN_WARN_NODATA) {
+            // Zeige Fehler an, falls es nicht bloß ein leerer Puffer ist
+            // post("iemcan (Win): Read Error: %d", bRet);
+            Sleep(5);
         } else {
             Sleep(1);
         }
     }
+    post("iemcan (Win): Empfangs-Thread BEENDET.");
     return 0;
 }
 
@@ -92,38 +94,39 @@ int can_backend_connect(t_can_backend *b, const char *device_or_channel) {
 
     EnterCriticalSection(&g_cs);
 
-    // Falls die Hardware schon durch eine andere Instanz/DLL geöffnet wurde:
+    // Wenn Hardware schon offen ist:
     if (g_hUcan != USBCAN_INVALID_HANDLE) {
         g_refcount++;
         b->is_connected = 1;
 
-        // Registrieren für Empfang
         if (g_backend_count < MAX_BACKENDS) {
             g_backends[g_backend_count++] = b;
         }
 
         LeaveCriticalSection(&g_cs);
-        post("CAN-Backend: Mit bestehender Hardware-Instanz verbunden (Aktive Instanzen: %d)", g_refcount);
+        post("iemcan (Win): Mit bestehender Hardware verbunden (Refcount: %d)", g_refcount);
         return 1;
     }
 
-    // Erstmalige Initialisierung der Hardware
+    // Hardware initialisieren
     BYTE bDeviceNr = USBCAN_ANY_MODULE;
     BYTE bRet = UcanInitHardwareEx(&g_hUcan, bDeviceNr, NULL, NULL);
 
     if (bRet != USBCAN_SUCCESSFUL) {
-        pd_error(b->pd_obj, "CAN-Backend: Fehler bei UcanInitHardwareEx (%d)", bRet);
+        pd_error(b->pd_obj, "iemcan (Win): FEHLER bei UcanInitHardwareEx (Code: %d)", bRet);
         LeaveCriticalSection(&g_cs);
         return 0;
     }
+
+    post("iemcan (Win): UcanInitHardwareEx ERFOLGREICH (Handle: %p)", g_hUcan);
 
     tUcanInitCanParam InitParam;
     memset(&InitParam, 0, sizeof(InitParam));
 
     InitParam.m_dwSize               = sizeof(InitParam);
     InitParam.m_bMode                = 0; // kUcanModeNormal
-    InitParam.m_bBTR0                = HIBYTE(USBCAN_BAUD_500kBit);
-    InitParam.m_bBTR1                = LOBYTE(USBCAN_BAUD_500kBit);
+    InitParam.m_bBTR0                = HIBYTE(USBCAN_BAUD_250kBit); // Testweise auf 250k
+    InitParam.m_bBTR1                = LOBYTE(USBCAN_BAUD_250kBit);
     InitParam.m_bOCR                 = 0x1A;
     InitParam.m_dwAMR                = USBCAN_AMR_ALL;
     InitParam.m_dwACR                = USBCAN_ACR_ALL;
@@ -133,18 +136,23 @@ int can_backend_connect(t_can_backend *b, const char *device_or_channel) {
 
     bRet = UcanInitCanEx(g_hUcan, &InitParam);
     if (bRet != USBCAN_SUCCESSFUL) {
-        pd_error(b->pd_obj, "CAN-Backend: Fehler bei UcanInitCanEx (%d)", bRet);
+        pd_error(b->pd_obj, "iemcan (Win): FEHLER bei UcanInitCanEx (Code: %d)", bRet);
         UcanDeinitHardware(g_hUcan);
         g_hUcan = USBCAN_INVALID_HANDLE;
         LeaveCriticalSection(&g_cs);
         return 0;
     }
 
+    post("iemcan (Win): UcanInitCanEx ERFOLGREICH");
+
     // Empfangsthread starten
     g_thread_running = 1;
     g_hThread = CreateThread(NULL, 0, win_can_read_thread, NULL, 0, NULL);
 
-    // Backend registrieren & Refcount setzen
+    if (g_hThread == NULL) {
+        pd_error(b->pd_obj, "iemcan (Win): FEHLER beim Erstellen des Windows-Threads!");
+    }
+
     if (g_backend_count < MAX_BACKENDS) {
         g_backends[g_backend_count++] = b;
     }
@@ -154,7 +162,7 @@ int can_backend_connect(t_can_backend *b, const char *device_or_channel) {
 
     LeaveCriticalSection(&g_cs);
 
-    post("CAN-Backend: Hardware neu verbunden (Aktive Instanzen: %d)", g_refcount);
+    post("iemcan (Win): Hardware vollständig verbunden.");
     return 1;
 }
 
@@ -163,7 +171,6 @@ void can_backend_disconnect(t_can_backend *b) {
 
     EnterCriticalSection(&g_cs);
 
-    // Backend aus Liste entfernen
     for (int i = 0; i < g_backend_count; i++) {
         if (g_backends[i] == b) {
             g_backends[i] = g_backends[g_backend_count - 1];
@@ -175,7 +182,6 @@ void can_backend_disconnect(t_can_backend *b) {
     b->is_connected = 0;
     g_refcount--;
 
-    // Wenn keine Instanz die Hardware mehr nutzt -> Deinitialisieren
     if (g_refcount == 0 && g_hUcan != USBCAN_INVALID_HANDLE) {
         g_thread_running = 0;
         if (g_hThread) {
@@ -187,7 +193,7 @@ void can_backend_disconnect(t_can_backend *b) {
         UcanDeinitCanEx(g_hUcan, USBCAN_CHANNEL_CH0);
         UcanDeinitHardware(g_hUcan);
         g_hUcan = USBCAN_INVALID_HANDLE;
-        post("CAN-Backend: Hardware-Verbindung getrennt.");
+        post("iemcan (Win): Hardware getrennt.");
     }
 
     LeaveCriticalSection(&g_cs);
@@ -205,7 +211,7 @@ void can_backend_set_filter(t_can_backend *b, int argc, t_atom *argv) {
 
 int can_backend_send(t_can_backend *b, unsigned int can_id, int dlc, const unsigned char *data) {
     if (!b || !b->is_connected || g_hUcan == USBCAN_INVALID_HANDLE) {
-        pd_error(b ? b->pd_obj : NULL, "CANsend: Nicht mit Hardware verbunden!");
+        pd_error(b ? b->pd_obj : NULL, "CANsend: Nicht verbunden!");
         return 0;
     }
 
