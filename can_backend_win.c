@@ -32,11 +32,14 @@ static DWORD WINAPI win_can_read_thread(LPVOID lpParam) {
     (void)lpParam;
     tCanMsgStruct canMsg;
 
+    post("CAN-Backend (Win): Empfangs-Thread gestartet.");
+
     while (g_thread_running) {
         BYTE bRet = UcanReadCanMsgEx(g_hUcan, USBCAN_CHANNEL_CH0, &canMsg, NULL);
 
         if (bRet == USBCAN_SUCCESSFUL) {
-            // Empfangene Nachricht an alle registrierten Pd-Empfänger (CANreceive) weiterleiten
+            post("CAN-Backend (Win): Paket empfangen! ID: 0x%X", canMsg.m_dwID);
+
             EnterCriticalSection(&g_cs);
             for (int i = 0; i < g_backend_count; i++) {
                 t_can_backend *b = g_backends[i];
@@ -53,13 +56,12 @@ static DWORD WINAPI win_can_read_thread(LPVOID lpParam) {
                         SETFLOAT(&argv[j], canMsg.m_bData[j]);
                     }
 
-                    // Analog zu Linux: ID als Selector-Symbol, Datenbytes als Liste
                     outlet_anything(b->msgout, s_id, dlc, argv);
                 }
             }
             LeaveCriticalSection(&g_cs);
         } else {
-            Sleep(1); // Entlastung bei leerem Puffer
+            Sleep(1);
         }
     }
     return 0;
