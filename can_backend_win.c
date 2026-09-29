@@ -132,7 +132,7 @@ int can_backend_connect(t_can_backend *b, const char *device_or_channel) {
     memset(&InitParam, 0, sizeof(InitParam));
 
     InitParam.m_dwSize               = sizeof(InitParam);
-    InitParam.m_bMode                = USBCAN_MODE_NORMAL; // kUcanModeNormal
+    InitParam.m_bMode                = 0; // kUcanModeNormal
     InitParam.m_bBTR0                = HIBYTE(USBCAN_BAUD_500kBit); // Testweise auf 250k
     InitParam.m_bBTR1                = LOBYTE(USBCAN_BAUD_500kBit);
     InitParam.m_bOCR                 = 0x1A;
