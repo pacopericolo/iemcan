@@ -30,7 +30,7 @@ static int g_cs_initialized = 0;
 // Windows Thread zum kontinuierlichen Empfang
 static DWORD WINAPI win_can_read_thread(LPVOID lpParam) {
     (void)lpParam;
-    UcanHandle handle = g_win_backend.hUcan;
+    tUcanHandle handle = g_win_backend.hUcan;
 
     while (g_win_backend.thread_running) {
         tUcanMsg rx_msg;
