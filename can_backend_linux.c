@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <errno.h>
 
 #define MAX_FILTERS 64
 
@@ -55,17 +56,20 @@ static void apply_filters_to_socket(t_can_backend *b) {
     if (!b || b->sockfd < 0) return;
 
     if (b->filter_count > 0) {
-        if (setsockopt(b->sockfd, SOL_CAN_RAW, CAN_RAW_FILTER, b->filters, b->filter_count * sizeof(struct can_filter)) < 0) {
-            pd_error(b->pd_obj, "iemcan (Linux): Fehler beim Setzen der Kernel-Filter!");
+        int res = setsockopt(b->sockfd, SOL_CAN_RAW, CAN_RAW_FILTER, 
+                            b->filters, b->filter_count * sizeof(struct can_filter));
+        if (res < 0) {
+            pd_error(b->pd_obj, "iemcan (Linux): setsockopt CAN_RAW_FILTER fehlgeschlagen! Error: %s", strerror(errno));
         } else {
-            post("iemcan (Linux): %d Kernel-Filterregeln angewendet.", b->filter_count);
+            post("iemcan (Linux): %d Kernel-Filterregeln erfolgreich gesetzt.", b->filter_count);
         }
     } else {
-        // Keinerlei Filter gesetzt -> Alle Nachrichten akzeptieren
+        // Wenn 0 Filter gesetzt sind: Standard-Pass-All Filter explizit setzen
         struct can_filter default_filter;
         default_filter.can_id = 0;
         default_filter.can_mask = 0;
         setsockopt(b->sockfd, SOL_CAN_RAW, CAN_RAW_FILTER, &default_filter, sizeof(default_filter));
+        post("iemcan (Linux): Keine Filter übergeben - Pass-All aktiv.");
     }
 }
 
@@ -83,6 +87,7 @@ t_can_backend* can_backend_init(void *pd_obj, t_outlet *msgout, t_outlet *errout
     return b;
 }
 
+
 void can_backend_set_filter(t_can_backend *b, int argc, t_atom *argv) {
     if (!b) return;
 
@@ -90,7 +95,8 @@ void can_backend_set_filter(t_can_backend *b, int argc, t_atom *argv) {
 
     if (argc >= 1) {
         int start_idx = 0;
-        // Ignoriere ein führendes "||" oder "&&" (Original-Syntax)
+        
+        // Führendes "||" oder "&&" überspringen
         if (argv[0].a_type == A_SYMBOL) {
             const char *op = atom_getsymbol(&argv[0])->s_name;
             if (strcmp(op, "||") == 0 || strcmp(op, "&&") == 0) {
@@ -99,32 +105,39 @@ void can_backend_set_filter(t_can_backend *b, int argc, t_atom *argv) {
         }
 
         for (int i = start_idx; i < argc && b->filter_count < MAX_FILTERS; i++) {
-            if (argv[i].a_type == A_SYMBOL) {
-                const char *ptr = atom_getsymbol(&argv[i])->s_name;
-                unsigned int id = 0, mask = 0;
+            if (argv[i].a_type != A_SYMBOL) continue;
 
-                // Syntax "0x2BC:7FF"
-                if (sscanf(ptr, "0x%x:%x", &id, &mask) == 2) {
+            const char *ptr = atom_getsymbol(&argv[i])->s_name;
+            unsigned int id = 0, mask = 0;
+
+            // 1. Versuche das Format "0x2BC:7FF" oder "2BC:7FF" zu parsen
+            if (sscanf(ptr, "%x:%x", &id, &mask) == 2 || sscanf(ptr, "0x%x:0x%x", &id, &mask) == 2) {
+                if (id > 0x7FF) {
+                    b->filters[b->filter_count].can_id = id | CAN_EFF_FLAG;
+                    b->filters[b->filter_count].can_mask = (mask & CAN_EFF_MASK) | CAN_EFF_FLAG;
+                } else {
                     b->filters[b->filter_count].can_id = id;
-                    b->filters[b->filter_count].can_mask = mask & ~CAN_ERR_FLAG;
-                    b->filter_count++;
-                } 
-                // Einfache Syntax "0x2BC"
-                else if (sscanf(ptr, "0x%x", &id) == 1) {
-                    b->filters[b->filter_count].can_id = id;
-                    b->filters[b->filter_count].can_mask = (id > 0x7FF) ? CAN_EFF_MASK : CAN_SFF_MASK;
-                    b->filter_count++;
+                    b->filters[b->filter_count].can_mask = mask & CAN_SFF_MASK;
                 }
-            } else if (argv[i].a_type == A_FLOAT) {
-                unsigned int id = (unsigned int)atom_getfloat(&argv[i]);
-                b->filters[b->filter_count].can_id = id;
-                b->filters[b->filter_count].can_mask = (id > 0x7FF) ? CAN_EFF_MASK : CAN_SFF_MASK;
                 b->filter_count++;
+            } 
+            // 2. Versuche einfache Hex-ID "0x2BC" ohne Maske (Standard-Maske annehmen)
+            else if (sscanf(ptr, "%x", &id) == 1) {
+                if (id > 0x7FF) {
+                    b->filters[b->filter_count].can_id = id | CAN_EFF_FLAG;
+                    b->filters[b->filter_count].can_mask = CAN_EFF_MASK | CAN_EFF_FLAG;
+                } else {
+                    b->filters[b->filter_count].can_id = id;
+                    b->filters[b->filter_count].can_mask = CAN_SFF_MASK;
+                }
+                b->filter_count++;
+            } else {
+                pd_error(b->pd_obj, "iemcan (Linux): Filter-Syntaxfehler bei Atom '%s'", ptr);
             }
         }
     }
 
-    // Wenn der Socket bereits geöffnet ist, den Filter sofort im Kernel aktualisieren
+    // Sofort im Socket anwenden, falls verbunden
     if (b->sockfd >= 0) {
         apply_filters_to_socket(b);
     }
