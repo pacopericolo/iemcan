@@ -4,7 +4,7 @@
 #include <stdlib.h>
 
 // Systec USB-CAN SDK Header
-#include "usbcan.h"
+#include "usbcan32.h"
 
 #define MAX_BACKENDS 16
 
