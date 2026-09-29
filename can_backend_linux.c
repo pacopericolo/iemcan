@@ -96,14 +96,15 @@ void can_backend_set_filter(t_can_backend *b, int argc, t_atom *argv) {
         unsigned int id = 0, mask = 0;
 
         if (argv[i].a_type == A_SYMBOL) {
-            const char *ptr = atom_getsymbol(&argv + i)->s_name;
+            // Korrigierte Zeiger-Arithmetik: &argv[i]
+            const char *ptr = atom_getsymbol(&argv[i])->s_name;
 
             // Führende Operatoren "||" oder "&&" überspringen
             if (strcmp(ptr, "||") == 0 || strcmp(ptr, "&&") == 0) {
                 continue;
             }
 
-            // 1. Format "0x2BC:7FF" oder "2BC:7FF"
+            // 1. Versuche Format "0x2BC:7FF" oder "2BC:7FF" zu parsen
             if (sscanf(ptr, "%x:%x", &id, &mask) == 2 || sscanf(ptr, "0x%x:0x%x", &id, &mask) == 2) {
                 if (id > 0x7FF) {
                     b->filters[b->filter_count].can_id = id | CAN_EFF_FLAG;
@@ -114,7 +115,7 @@ void can_backend_set_filter(t_can_backend *b, int argc, t_atom *argv) {
                 }
                 b->filter_count++;
             } 
-            // 2. Format "0x2BC" oder "2BC" ohne Maske
+            // 2. Versuche Format "0x2BC" oder "2BC" ohne Maske zu parsen
             else if (sscanf(ptr, "%x", &id) == 1 || sscanf(ptr, "0x%x", &id) == 1) {
                 if (id > 0x7FF) {
                     b->filters[b->filter_count].can_id = id | CAN_EFF_FLAG;
@@ -126,7 +127,7 @@ void can_backend_set_filter(t_can_backend *b, int argc, t_atom *argv) {
                 b->filter_count++;
             }
         } 
-        // 3. Falls die ID direkt als Pure Data Float ankommt
+        // 3. Falls Pure Data eine reine Zahl (A_FLOAT) schickt
         else if (argv[i].a_type == A_FLOAT) {
             id = (unsigned int)atom_getfloat(&argv[i]);
             if (id > 0x7FF) {
