@@ -59,17 +59,16 @@ static void apply_filters_to_socket(t_can_backend *b) {
         int res = setsockopt(b->sockfd, SOL_CAN_RAW, CAN_RAW_FILTER, 
                             b->filters, b->filter_count * sizeof(struct can_filter));
         if (res < 0) {
-            pd_error(b->pd_obj, "iemcan (Linux): setsockopt CAN_RAW_FILTER fehlgeschlagen! Error: %s", strerror(errno));
+            pd_error(b->pd_obj, "iemcan (Linux): setsockopt CAN_RAW_FILTER fehlgeschlagen! Fehler: %s", strerror(errno));
         } else {
-            post("iemcan (Linux): %d Kernel-Filterregeln erfolgreich gesetzt.", b->filter_count);
+            post("iemcan (Linux): %d Kernel-Filterregeln erfolgreich auf Socket angewendet.", b->filter_count);
         }
     } else {
-        // Wenn 0 Filter gesetzt sind: Standard-Pass-All Filter explizit setzen
         struct can_filter default_filter;
         default_filter.can_id = 0;
         default_filter.can_mask = 0;
         setsockopt(b->sockfd, SOL_CAN_RAW, CAN_RAW_FILTER, &default_filter, sizeof(default_filter));
-        post("iemcan (Linux): Keine Filter übergeben - Pass-All aktiv.");
+        post("iemcan (Linux): Keine Filterregeln erkannt - Pass-All aktiv.");
     }
 }
 
@@ -93,24 +92,18 @@ void can_backend_set_filter(t_can_backend *b, int argc, t_atom *argv) {
 
     b->filter_count = 0;
 
-    if (argc >= 1) {
-        int start_idx = 0;
-        
-        // Führendes "||" oder "&&" überspringen
-        if (argv[0].a_type == A_SYMBOL) {
-            const char *op = atom_getsymbol(&argv[0])->s_name;
-            if (strcmp(op, "||") == 0 || strcmp(op, "&&") == 0) {
-                start_idx = 1;
+    for (int i = 0; i < argc && b->filter_count < MAX_FILTERS; i++) {
+        unsigned int id = 0, mask = 0;
+
+        if (argv[i].a_type == A_SYMBOL) {
+            const char *ptr = atom_getsymbol(&argv + i)->s_name;
+
+            // Führende Operatoren "||" oder "&&" überspringen
+            if (strcmp(ptr, "||") == 0 || strcmp(ptr, "&&") == 0) {
+                continue;
             }
-        }
 
-        for (int i = start_idx; i < argc && b->filter_count < MAX_FILTERS; i++) {
-            if (argv[i].a_type != A_SYMBOL) continue;
-
-            const char *ptr = atom_getsymbol(&argv[i])->s_name;
-            unsigned int id = 0, mask = 0;
-
-            // 1. Versuche das Format "0x2BC:7FF" oder "2BC:7FF" zu parsen
+            // 1. Format "0x2BC:7FF" oder "2BC:7FF"
             if (sscanf(ptr, "%x:%x", &id, &mask) == 2 || sscanf(ptr, "0x%x:0x%x", &id, &mask) == 2) {
                 if (id > 0x7FF) {
                     b->filters[b->filter_count].can_id = id | CAN_EFF_FLAG;
@@ -121,8 +114,8 @@ void can_backend_set_filter(t_can_backend *b, int argc, t_atom *argv) {
                 }
                 b->filter_count++;
             } 
-            // 2. Versuche einfache Hex-ID "0x2BC" ohne Maske (Standard-Maske annehmen)
-            else if (sscanf(ptr, "%x", &id) == 1) {
+            // 2. Format "0x2BC" oder "2BC" ohne Maske
+            else if (sscanf(ptr, "%x", &id) == 1 || sscanf(ptr, "0x%x", &id) == 1) {
                 if (id > 0x7FF) {
                     b->filters[b->filter_count].can_id = id | CAN_EFF_FLAG;
                     b->filters[b->filter_count].can_mask = CAN_EFF_MASK | CAN_EFF_FLAG;
@@ -131,13 +124,22 @@ void can_backend_set_filter(t_can_backend *b, int argc, t_atom *argv) {
                     b->filters[b->filter_count].can_mask = CAN_SFF_MASK;
                 }
                 b->filter_count++;
-            } else {
-                pd_error(b->pd_obj, "iemcan (Linux): Filter-Syntaxfehler bei Atom '%s'", ptr);
             }
+        } 
+        // 3. Falls die ID direkt als Pure Data Float ankommt
+        else if (argv[i].a_type == A_FLOAT) {
+            id = (unsigned int)atom_getfloat(&argv[i]);
+            if (id > 0x7FF) {
+                b->filters[b->filter_count].can_id = id | CAN_EFF_FLAG;
+                b->filters[b->filter_count].can_mask = CAN_EFF_MASK | CAN_EFF_FLAG;
+            } else {
+                b->filters[b->filter_count].can_id = id;
+                b->filters[b->filter_count].can_mask = CAN_SFF_MASK;
+            }
+            b->filter_count++;
         }
     }
 
-    // Sofort im Socket anwenden, falls verbunden
     if (b->sockfd >= 0) {
         apply_filters_to_socket(b);
     }
