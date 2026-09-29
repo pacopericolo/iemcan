@@ -92,54 +92,44 @@ void can_backend_set_filter(t_can_backend *b, int argc, t_atom *argv) {
 
     b->filter_count = 0;
 
+    post("--- iemcan DEBUG FILTER ---");
+    post("Anzahl Argumente (argc): %d", argc);
+
+    for (int i = 0; i < argc; i++) {
+        if (argv[i].a_type == A_SYMBOL) {
+            post("Arg %d: Typ SYMBOL | Wert: '%s'", i, atom_getsymbol(&argv[i])->s_name);
+        } else if (argv[i].a_type == A_FLOAT) {
+            post("Arg %d: Typ FLOAT  | Wert: %f", i, atom_getfloat(&argv[i]));
+        } else {
+            post("Arg %d: Unbekannter Typ: %d", i, argv[i].a_type);
+        }
+    }
+
     for (int i = 0; i < argc && b->filter_count < MAX_FILTERS; i++) {
         unsigned int id = 0, mask = 0;
 
         if (argv[i].a_type == A_SYMBOL) {
-            // Korrigierte Zeiger-Arithmetik: &argv[i]
             const char *ptr = atom_getsymbol(&argv[i])->s_name;
 
-            // Führende Operatoren "||" oder "&&" überspringen
             if (strcmp(ptr, "||") == 0 || strcmp(ptr, "&&") == 0) {
                 continue;
             }
 
-            // 1. Versuche Format "0x2BC:7FF" oder "2BC:7FF" zu parsen
+            // Flexibles Parsen: Akzeptiert "0x2BC:7FF", "2BC:7FF", "0x2BC" etc.
             if (sscanf(ptr, "%x:%x", &id, &mask) == 2 || sscanf(ptr, "0x%x:0x%x", &id, &mask) == 2) {
-                if (id > 0x7FF) {
-                    b->filters[b->filter_count].can_id = id | CAN_EFF_FLAG;
-                    b->filters[b->filter_count].can_mask = (mask & CAN_EFF_MASK) | CAN_EFF_FLAG;
-                } else {
-                    b->filters[b->filter_count].can_id = id;
-                    b->filters[b->filter_count].can_mask = mask & CAN_SFF_MASK;
-                }
-                b->filter_count++;
-            } 
-            // 2. Versuche Format "0x2BC" oder "2BC" ohne Maske zu parsen
-            else if (sscanf(ptr, "%x", &id) == 1 || sscanf(ptr, "0x%x", &id) == 1) {
-                if (id > 0x7FF) {
-                    b->filters[b->filter_count].can_id = id | CAN_EFF_FLAG;
-                    b->filters[b->filter_count].can_mask = CAN_EFF_MASK | CAN_EFF_FLAG;
-                } else {
-                    b->filters[b->filter_count].can_id = id;
-                    b->filters[b->filter_count].can_mask = CAN_SFF_MASK;
-                }
-                b->filter_count++;
-            }
-        } 
-        // 3. Falls Pure Data eine reine Zahl (A_FLOAT) schickt
-        else if (argv[i].a_type == A_FLOAT) {
-            id = (unsigned int)atom_getfloat(&argv[i]);
-            if (id > 0x7FF) {
-                b->filters[b->filter_count].can_id = id | CAN_EFF_FLAG;
-                b->filters[b->filter_count].can_mask = CAN_EFF_MASK | CAN_EFF_FLAG;
-            } else {
                 b->filters[b->filter_count].can_id = id;
-                b->filters[b->filter_count].can_mask = CAN_SFF_MASK;
+                b->filters[b->filter_count].can_mask = mask;
+                b->filter_count++;
+            } else if (sscanf(ptr, "%x", &id) == 1 || sscanf(ptr, "0x%x", &id) == 1) {
+                b->filters[b->filter_count].can_id = id;
+                b->filters[b->filter_count].can_mask = (id > 0x7FF) ? CAN_EFF_MASK : CAN_SFF_MASK;
+                b->filter_count++;
             }
-            b->filter_count++;
         }
     }
+
+    post("Erkannte Filterregeln (filter_count): %d", b->filter_count);
+    post("---------------------------");
 
     if (b->sockfd >= 0) {
         apply_filters_to_socket(b);
