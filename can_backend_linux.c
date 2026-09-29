@@ -72,15 +72,15 @@ static void linux_can_read(t_can_backend *b, int fd) {
         dlc = 8; // Abfangschutz für Standard CAN Frames
     }
 
-    t_atom out_atoms[9];
-    SETSYMBOL(&out_atoms[0], gensym(idbuf));
+    t_atom out_atoms[8]; // Nur die Datenbytes als Atoms
 
     for (int i = 0; i < dlc && i < 8; i++) {
-        SETFLOAT(&out_atoms[1 + i], cfd.data[i]);
+        SETFLOAT(&out_atoms[i], cfd.data[i]);
     }
 
     if (b->msgout) {
-        outlet_list(b->msgout, &s_list, dlc + 1, out_atoms);
+        // ID als Selector-Symbol (1. Argument) und Datenbytes als Liste (restliche Argumente)
+        outlet_anything(b->msgout, gensym(idbuf), dlc, out_atoms);
     }
 }
 
