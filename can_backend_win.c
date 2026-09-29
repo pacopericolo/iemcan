@@ -30,37 +30,49 @@ static int g_cs_initialized = 0;
 // Windows Thread zum kontinuierlichen Empfang
 static DWORD WINAPI win_can_read_thread(LPVOID lpParam) {
     (void)lpParam;
-    tCanMsgStruct canMsg;
+    UcanHandle handle = g_win_backend.hUcan;
 
-    while (g_thread_running) {
-        BYTE bRet = UcanReadCanMsgEx(g_hUcan, USBCAN_CHANNEL_CH0, &canMsg, NULL);
+    while (g_win_backend.thread_running) {
+        tUcanMsg rx_msg;
+        BYTE bRet = UcanReadCanMsg(handle, &rx_msg);
 
         if (bRet == USBCAN_SUCCESSFUL) {
-            // Empfangene Nachricht an alle registrierten Pd-Empfänger (CANreceive) weiterleiten
+            // RTR- (Remote Transmission Request) oder Error-Frames ignorieren / behandeln
+            if (rx_msg.m_bFF & USBCAN_MSG_FF_RTR) {
+                continue;
+            }
+
+            // ID in Hex-Format umwandeln (z.B. "0x101")
+            char idbuf[32];
+            snprintf(idbuf, sizeof(idbuf), "0x%X", rx_msg.m_dwID);
+            t_symbol *s_id = gensym(idbuf);
+
+            // Datenbytes als reine Zahl-Atoms vorbereiten
+            int dlc = rx_msg.m_bLen > 8 ? 8 : rx_msg.m_bLen;
+            t_atom out_atoms[8];
+
+            for (int i = 0; i < dlc; i++) {
+                SETFLOAT(&out_atoms[i], rx_msg.m_bData[i]);
+            }
+
+            // Alle registrierten Backends benachrichtigen
             EnterCriticalSection(&g_cs);
             for (int i = 0; i < g_backend_count; i++) {
-                t_can_backend *b = g_backends[i];
-                if (b && b->msgout) {
-                    unsigned int can_id = canMsg.m_dwID;
-                    int dlc = canMsg.m_bDLC;
-
-                    t_atom argv[9];
-                    char idbuf[32];
-                    snprintf(idbuf, sizeof(idbuf), "0x%X", can_id);
-                    SETSYMBOL(&argv[0], gensym(idbuf));
-
-                    for (int j = 0; j < dlc && j < 8; j++) {
-                        SETFLOAT(&argv[1 + j], canMsg.m_bData[j]);
-                    }
-
-                    outlet_list(b->msgout, &s_list, dlc + 1, argv);
+                if (g_backends[i] && g_backends[i]->msgout && g_backends[i]->is_connected) {
+                    // ID als Selector-Symbol, Datenbytes als Atoms übergeben
+                    outlet_anything(g_backends[i]->msgout, s_id, dlc, out_atoms);
                 }
             }
             LeaveCriticalSection(&g_cs);
+        } else if (bRet == USBCAN_WARN_NODATA) {
+            // Keine Daten im Puffer – Thread kurz schlafen legen, um CPU-Last gering zu halten
+            Sleep(1);
         } else {
-            Sleep(1); // Entlastung bei leerem Puffer
+            // Bei sonstigen Fehlern kurz warten
+            Sleep(5);
         }
     }
+
     return 0;
 }
 
